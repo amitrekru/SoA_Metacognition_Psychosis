@@ -1,0 +1,1189 @@
+---
+title: "Results for SoA-Metacognition-Psychosis project"
+author: "Amit Regev Krugwasser, Yonatan Stern, Nathan Faivre, Eiran Vadim Harel, Roy Salomon"
+date: "July 2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+
+# Installing and loading required packages
+if (!require("pacman")) install.packages("pacman")
+pacman::p_load("tidyverse", "lme4", "ggplot2", "broom.mixed", "knitr", "kableExtra", "cowplot", "readr", "dplyr", "reshape2", "plyr", "gmodels", "Rmisc", "foreach", "reshape", "patchwork", "ggpubr", "RColorBrewer", "rstatix", "BayesFactor", "psycho", "Hmisc", "ggplotify", "gridExtra", "lsr", "grid", "lubridate", "afex", "lmerTest", "roperators", "raster")
+
+knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_chunk$set(warning = FALSE)
+source('Functions.r')
+seed = 20
+set.seed(seed)
+```
+
+```{r Loading data for mixed models, echo=FALSE, warning=FALSE, message=FALSE}
+
+# Loading experiment file copy for mixed models
+expMM <- read.csv("../Data/All_Participants_Trial_By_Trial_Data.csv", TRUE)
+
+# Changing domain to string
+expMM$domain = ifelse(expMM$domain==1 ,'Temporal','Spatial')
+expMM<-dplyr::rename(expMM,ID=sub_name)
+
+# Adding a group column
+expMM$group<-ifelse(str_detect(expMM$ID, 'HC'),"HC","PSY")
+expMM$domain = as.factor(expMM$domain)
+expMM$ID = as.factor(expMM$ID)
+expMM$acc = as.numeric(expMM$acc)
+expMM$response=as.factor(expMM$response)
+
+# Centring mag (for MM)
+expMM$mag_centered=expMM$mag-1.5
+
+# Making alteration magnitude quadratic (for confidence analysis)
+expMM$mag_sqr = expMM$mag_centered^2
+
+# Same as domain column, only not factorized
+expMM$domain_name<-ifelse(expMM$domain == 1, "Temporal","Spatial")
+
+# Confidence scores direction is inverse in the file
+expMM$conf = -1*expMM$conf
+
+# Making group an effect coding
+expMM$group= as.factor(expMM$group)
+contrasts(expMM$group) <- contr.sum
+```
+
+```{r Loading data for figuers, message=FALSE, warning=FALSE, include=FALSE, results='hide'}
+
+# Loading experiment file copy for figuers
+expFig <- read.csv("../Data/All_Participants_Trial_By_Trial_Data.csv", TRUE)
+
+# Confidence scores direction is inverse in the file
+expFig$conf = -1*expFig$conf
+
+expFig$group<-ifelse(str_detect(expFig$sub_name, 'HC'),"HC","PSY")
+
+expFig$domain_name<-ifelse(expFig$domain == 1, "Temporal","Spatial")
+
+# Calculating mean SoA of every subject in both domains across all alteration magnitudes
+IndividualSoA <- ddply(expFig, .(sub_name,domain_name,mag), summarise,
+                 SoA = mean(response)
+)
+
+IndividualSoA$group = ifelse(str_detect(IndividualSoA$sub_name, 'HC'),"HC","PSY")
+
+IndividualSoA$sub_name = str_c(IndividualSoA$group, extract_numeric(IndividualSoA$sub_name), sep = " ")
+
+# Calculating group mean SoA for both groupsin both domains across all alteration magnitudes
+GroupSoA <- ddply(IndividualSoA, .(group, domain_name,mag), summarise,
+                 mean_SoA =  ci(SoA)[1],
+                 ci_low = ci(SoA)[2],
+                 ci_high = ci(SoA)[3]
+)
+
+# Creating an empty dataframe that will contain individual confidence scores
+IndvConfMean <- data.frame(matrix(ncol = 6, nrow = 0))
+IndvConfMeanCols <- c("id", "domain", "mag", "acc", "conf", "group")
+colnames(IndvConfMean) <- IndvConfMeanCols
+
+# Calculating confidence of every subject, separatly for correct and incorrect SoA question replies, in both domains in all magnitudes. This is done because ci doesn't handle missing values well
+foreach(sub=levels(expFig$sub_name)) %:% foreach(accu=c(0,1)) %:% foreach(domain=unique(expFig$domain_name)) %:% foreach(altmag=c(0,1,2,3))  %do%
+  {
+    mean_conf = mean(expFig[expFig$mag == altmag & expFig$domain_name == domain & expFig$acc == accu & expFig$sub_name == sub,"conf"])
+    group = expFig[expFig$mag == altmag & expFig$domain_name == domain & expFig$acc == accu & expFig$sub_name == sub,"group"]
+    IndvConfMean[nrow(IndvConfMean)+1,] <- c(sub,domain,altmag,accu,mean_conf,group[1])
+  }
+
+IndvConfMean$conf = as.numeric(IndvConfMean$conf)
+
+# Creating an empty dataframe that will contain group confidence scores
+GroupConfidenceCI <- data.frame(matrix(ncol = 7, nrow = 0))
+GroupConfidenceCICols <- c("domain", "mag", "acc", "conf", "ci_low", "ci_high", "group")
+colnames(GroupConfidenceCI) <- GroupConfidenceCICols
+
+# Calculating confidence and ci for both groups, separatly for correct and incorrect SoA question replies, in both domains in all magnitudes
+foreach (group=unique(IndvConfMean[!is.na(IndvConfMean$group), "group"])) %:% foreach (domain=unique(IndvConfMean$domain)) %:% foreach (acc=unique(IndvConfMean$acc)) %:% foreach (mag=unique(IndvConfMean$mag)) %do%
+  {
+    ci = ci(IndvConfMean[IndvConfMean$mag == mag & IndvConfMean$domain == domain & IndvConfMean$acc == acc & IndvConfMean$group == group,"conf"], na.rm=TRUE)
+
+    GroupConfidenceCI[nrow(GroupConfidenceCI)+1,] <- c(domain,mag,acc,ci[1],ci[2],ci[3], group);
+  }
+
+# changing all columns to numeric for plotting purposes
+GroupConfidenceCI$mag = as.numeric(GroupConfidenceCI$mag)
+GroupConfidenceCI$acc = as.numeric(GroupConfidenceCI$acc)
+GroupConfidenceCI$conf = as.numeric(GroupConfidenceCI$conf)
+GroupConfidenceCI$ci_low = as.numeric(GroupConfidenceCI$ci_low)
+GroupConfidenceCI$ci_high = as.numeric(GroupConfidenceCI$ci_high)
+IndvConfMean$mag = as.numeric(IndvConfMean$mag)
+IndvConfMean$acc = as.numeric(IndvConfMean$acc)
+IndvConfMean$conf = as.numeric(IndvConfMean$conf)
+
+# Adding a dummy column for pretty titles
+GroupConfidenceCI$acc_string = ifelse(GroupConfidenceCI$acc == 1,"Correct","Incorrect")
+IndvConfMean$acc_string = ifelse(IndvConfMean$acc == 1,"Correct","Incorrect")
+```
+
+```{r creating plots, echo=FALSE, warning=FALSE, message=FALSE, results='hide'}
+GroupSoA$ci_low = as.numeric(GroupSoA$ci_low)
+GroupSoA$ci_high = as.numeric(GroupSoA$ci_high)
+
+# Creating the temporal domain group SoA plot
+SoATempGrp<-ggplot(data=filter(GroupSoA, domain_name == 'Temporal' & (group == 'HC' | group == 'PSY')), aes(x=mag, y=mean_SoA, color=group)) +
+  geom_point(data = filter(IndividualSoA, domain_name == 'Temporal'), aes(x = mag, y = SoA, color = group, shape = group, fill = group) ,position = position_jitter(width = 0.12, seed = seed), size = 1.5, alpha = 0.3) +
+  geom_line(size=1) +
+  geom_point(size=3.5, aes(shape=group, fill = group)) +
+  geom_ribbon(aes(ymin=ci_low, ymax=ci_high, fill=group), linetype=0, alpha = 0.25, show.legend = FALSE) +
+  scale_shape_manual("Group", values=c(21,24)) +
+  scale_color_manual("Group", values=c("royalblue", "lightgoldenrod3")) +
+  scale_fill_manual("Group", values=c("royalblue", "lightgoldenrod4")) +
+  ylab("SoA\n(Self attribution proportion)") +
+  xlab("Delay (ms)") +
+  scale_y_continuous(breaks=seq(0,1,by = 0.2), minor_breaks = NULL, labels = gsub("\\.0$", "", as.character(round(seq(0,1,by = 0.2),digits = 2)))) +
+  scale_x_continuous(labels=c("0","100","200","300")) +
+  get_plots_theme() + labs(tag = "A")
+
+# Creating the spatial domain SoA plot
+SoASpatGrp<-ggplot(data=filter(GroupSoA, domain_name == 'Spatial' & (group == 'HC' | group == 'PSY')), aes(x=mag, y=mean_SoA, color=group)) +
+  geom_point(data = filter(IndividualSoA, domain_name == 'Spatial'), aes(x = mag, y = SoA, color = group, shape = group, fill = group) ,position = position_jitter(width = 0.12, seed = seed), size = 1.5, alpha = 0.3) +
+  geom_line(size=1) +
+  geom_point(size=3.5, aes(shape=group, fill = group)) +
+  geom_ribbon(aes(ymin=ci_low, ymax=ci_high, fill=group), linetype=0, alpha = 0.25, show.legend = FALSE) +
+  scale_shape_manual("Group", values=c(21,24)) +
+  scale_color_manual("Group", values=c("royalblue", "lightgoldenrod3")) +
+  scale_fill_manual("Group", values=c("royalblue", "lightgoldenrod4")) +
+  ylab("SoA\n(Self attribution proportion)") +
+  xlab("Angle (degress)") +
+  scale_y_continuous(breaks=seq(0,1,by = 0.2), minor_breaks = NULL, labels = gsub("\\.0$", "", as.character(round(seq(0,1,by = 0.2),digits = 2)))) +
+  scale_x_continuous(labels=c("0","6","10","14")) +
+  get_plots_theme() + labs(tag = " ")
+
+# Creating the temporal domain confidence plot
+ConfTempGrpCorrect<-ggplot(data=filter(GroupConfidenceCI, domain == 'Temporal' & acc_string == 'Correct'), aes(x=mag, y=conf, color=group))+
+  geom_point(data = filter(IndvConfMean, domain == 'Temporal' & acc_string == 'Correct'), aes(x = mag, y = conf, color = group, shape = group, fill = group) ,position = position_jitter(width = 0.16, seed = seed), size = 1.5, alpha = 0.3) +
+  geom_line(size=1) +
+  geom_point(size=3.5, aes(shape=group, fill = group)) +
+  geom_ribbon(aes(ymin=ci_low, ymax=ci_high, fill=group), linetype=0, alpha = 0.25, show.legend = FALSE) +
+  scale_color_manual("Group", values=c("royalblue", "lightgoldenrod3")) +
+  scale_fill_manual("Group", values=c("royalblue", "lightgoldenrod4")) +
+  scale_shape_manual("Group", values=c(21,24)) +
+  ylab("Confidence") +
+  xlab("Delay (ms)") +
+  scale_y_continuous(breaks=seq(-3, 3, by = 1),limits = c(-3,3), minor_breaks = NULL) +
+  scale_x_continuous(labels=c("0","100","200","300")) +
+  get_plots_theme() + labs(tag = "B")
+
+# Creating the spatial domain confidence plot
+ConfSpatGrpCorrect<-ggplot(data=filter(GroupConfidenceCI, domain == 'Spatial' & acc_string == 'Correct'), aes(x=mag, y=conf, color=group)) +
+  geom_point(data = filter(IndvConfMean, domain == 'Spatial' & acc_string == 'Correct'), aes(x = mag, y = conf, color = group, shape = group, fill = group) ,position = position_jitter(width = 0.16, seed = seed), size = 1.5, alpha = 0.3) +
+  geom_line(size=1) +
+  geom_point(size=3.5, aes(shape=group, fill = group)) +
+  geom_ribbon(aes(ymin=ci_low, ymax=ci_high, fill=group), linetype=0, alpha = 0.25, show.legend = FALSE) +
+  scale_shape_manual("Group", values=c(21,24)) +
+  scale_color_manual("Group", values=c("royalblue", "lightgoldenrod3")) +
+  scale_fill_manual("Group", values=c("royalblue", "lightgoldenrod4")) +
+  ylab("Confidence") +
+  xlab("Angle (degrees)") +
+  scale_y_continuous(breaks=c(-3,-2,-1,0,1,2,3),limits = c(-3,3), minor_breaks = NULL) +
+  scale_x_continuous(labels=c("0","6","10","14")) +
+  get_plots_theme() + labs(tag = " ")
+
+# Confidence for inccorect, temporal aspect (supp)
+ConfTempGrpIncorrect<-ggplot(data=filter(GroupConfidenceCI, domain == 'Temporal' & acc_string == 'Incorrect'), aes(x=mag, y=conf, color=group))+
+  geom_point(data = filter(IndvConfMean, domain == 'Temporal' & acc_string == 'Incorrect' & (group == 'HC' | group == 'PSY')), aes(x = mag, y = conf, color = group, shape = group, fill = group) ,position = position_jitter(width = 0.16, seed = seed), size = 1.5, alpha = 0.3) +
+  geom_line(size=1) +
+  geom_point(size=3.5, aes(shape=group, fill = group)) +
+  geom_ribbon(aes(ymin=ci_low, ymax=ci_high, fill=group), linetype=0, alpha = 0.25, show.legend = FALSE) +
+  scale_color_manual("Group", values=c("royalblue", "lightgoldenrod3")) +
+  scale_fill_manual("Group", values=c("royalblue", "lightgoldenrod4")) +
+  scale_shape_manual("Group", values=c(21,24)) +
+  ylab("Confidence") +
+  xlab("Delay (ms)") +
+  scale_y_continuous(breaks=seq(-3, 3, by = 1),limits = c(-3,3), minor_breaks = NULL) +
+  scale_x_continuous(labels=c("0","100","200","300")) +
+  get_plots_theme()
+
+# Confidence for inccorect, spatial aspect (supp)
+ConfSpatGrpIncorrect<-ggplot(data=filter(GroupConfidenceCI, domain == 'Spatial' & acc_string == 'Incorrect'), aes(x=mag, y=conf, color=group)) +
+  geom_point(data = filter(IndvConfMean, domain == 'Spatial' & acc_string == 'Incorrect'& (group == 'HC' | group == 'PSY')), aes(x = mag, y = conf, color = group, shape = group, fill = group) ,position = position_jitter(width = 0.16, seed = seed), size = 1.5, alpha = 0.3) +
+  geom_line(size=1) +
+  geom_point(size=3.5, aes(shape=group, fill = group)) +
+  geom_ribbon(aes(ymin=ci_low, ymax=ci_high, fill=group), linetype=0, alpha = 0.25, show.legend = FALSE) +
+  scale_shape_manual("Group", values=c(21,24)) +
+  scale_color_manual("Group", values=c("royalblue", "lightgoldenrod3")) +
+  scale_fill_manual("Group", values=c("royalblue", "lightgoldenrod4")) +
+  ylab("Confidence") +
+  xlab("Angle (degrees)") +
+  scale_y_continuous(breaks=c(-3,-2,-1,0,1,2,3),limits = c(-3,3), minor_breaks = NULL) +
+  scale_x_continuous(labels=c("0","6","10","14")) +
+  get_plots_theme()
+
+gk_df<-expFig%>%
+  dplyr::group_by(group,sub_name,domain_name)%>%
+  dplyr::summarize(gk=rcorr.cens(acc, conf, outx = TRUE)[2])
+
+plot_gk_temp<-ggplot(data =gk_df[gk_df$domain_name == 'Temporal',], aes(x=group, y=gk, fill=group))+
+  geom_violin(alpha=.4)+
+  geom_jitter(position=position_jitter(0.1), size = 1.5, aes(shape=group), alpha = 0.15, seed = seed)+
+   geom_point( aes(shape=group, color=group),size=3.5, stat = "summary", fun = "mean")+
+  scale_y_continuous(name="Metacognition\n(Goodman-Kruskal \u03B3)", breaks = seq(-1, 1, by = 0.5), labels = gsub("\\.0$", "", as.character(round(seq(-1, 1, by = 0.5),digits = 2))))+
+  geom_hline(yintercept=0,linetype="dashed")+
+  scale_fill_manual("Group", values = c("royalblue", "lightgoldenrod3"))+
+  scale_color_manual("Group", values=c("royalblue", "lightgoldenrod4")) +
+  theme_minimal() +
+  get_plots_theme() +
+  theme(legend.position = "none", panel.grid.major.y = element_line(colour = "gray"),
+               panel.grid.minor.y = element_line(colour = "white"), panel.border = element_rect(color = 'white', fill=NA, size=0.5), axis.title.x = element_blank(), axis.text.x = element_blank()) + coord_cartesian(ylim = c(-1.05, 1.05)) + labs(tag = "C")
+
+plot_gk_spat<-ggplot(data =gk_df[gk_df$domain_name == 'Spatial',], aes(x=group, y=gk, fill=group))+
+  geom_violin(alpha=.4)+
+  geom_jitter(position=position_jitter(0.1), size = 1.5, aes(shape=group), alpha = 0.15, seed = seed)+
+   geom_point( aes(shape=group, color=group),size=3.5, stat = "summary", fun = "mean")+
+  scale_y_continuous(name="Metacognition\n(Goodman-Kruskal \u03B3)", breaks = seq(-1, 1, by = 0.5), labels = gsub("\\.0$", "", as.character(round(seq(-1, 1, by = 0.5),digits = 2))))+
+  geom_hline(yintercept=0,linetype="dashed")+
+  scale_fill_manual("Group", values = c("royalblue", "lightgoldenrod3"))+
+  scale_color_manual("Group", values=c("royalblue", "lightgoldenrod4")) +
+  theme_minimal() +
+  get_plots_theme() +
+  theme(legend.position = "none", panel.grid.major.y = element_line(colour = "gray"),
+               panel.grid.minor.y = element_line(colour = "white"), panel.border = element_rect(color = 'white', fill=NA, size=0.5), axis.title.x = element_blank(), axis.text.x = element_blank()) + coord_cartesian(ylim = c(-1.05, 1.05)) + labs(tag = " ")
+
+```
+
+<center><b><font size="8">Main text figures and tables</font></b></center>
+   
+<u><font size="6">Group SoA, Confidence & Metacognition Plots (Figure 2)</font></u>
+<center>
+<br>   
+```{r Figure 2, echo=FALSE, message=FALSE, warning=FALSE, fig.width=7, fig.height=9.625}
+sc_plot = ggarrange(SoATempGrp, SoASpatGrp, ConfTempGrpCorrect, ConfSpatGrpCorrect, plot_gk_temp, plot_gk_spat, ncol = 2, nrow = 3, align = "v", common.legend = TRUE, legend = "bottom")
+
+sc_plot_titled = annotate_figure(sc_plot, top = text_grob(expression(~ ~ ~ ~ ~ ~ ~ ~underline("Temporal")~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~underline("Spatial")), face = "bold", size = 20, hjust = 0.5))
+
+sc_plot_titled
+```
+</center>
+<br>   
+```{r Computing and comparing sensitivity and criteria, echo=FALSE, message=FALSE, warning=FALSE, cache.rebuild = TRUE}
+
+#adding SDT column using find_SDT column
+expFig<-expFig%>%rowwise()%>%mutate(SDT_cat=find_SDT(mag,acc))
+
+# loading PSY subject data
+PSY_table_path<-"../Data/PSY_patients_tbl.csv"
+PSY_sub_data=read.csv(PSY_table_path)
+
+colnames(PSY_sub_data)[1] <- "sub_name"
+
+SDT_df<-expFig%>%
+  filter(!is.na(SDT_cat))%>%
+  group_by(group,sub_name,SDT_cat)%>%
+    dplyr::summarize(count=n())%>%
+  pivot_wider(id_cols = c(group,sub_name),names_from = SDT_cat,values_from = count)%>%
+   mutate(miss = replace(miss, is.na(miss), 0)) %>% #replaving na with zero
+  rowwise()%>%
+  group_by(group,sub_name)%>%
+  dplyr::summarize(dprime=psycho::dprime(hit,fa,miss,cr)$dprime,c=psycho::dprime(hit,fa,miss,cr)$c)
+
+#SDT per group & ttest comaprison
+grp_cmpr_SDT<-SDT_df %>%
+  pivot_longer(dprime:c,names_to = "measure_name",values_to = "measure_val" )%>%
+  group_by(measure_name) %>%
+  do(tidy(t.test(measure_val ~ group, method="unequal",data = .)))%>%
+  dplyr::select(c(measure_name,estimate1:p.value))%>%
+  dplyr::rename("HC mean"="estimate1","PSY mean"="estimate2")
+
+#adding Cohen's d
+cohend_df<-data.frame(cohenD=c(lsr::cohensD(dprime ~ group,method="unequal", data=SDT_df),
+lsr::cohensD(c ~ group,method="unequal", data=SDT_df)),
+measure_name=c("dprime","c"))
+
+#joining cohen's D to grp_cmpr_df
+grp_cmpr_SDT<-inner_join(grp_cmpr_SDT,cohend_df,by="measure_name")
+
+```
+
+```{r looking at Metacognition via Goodman-Kurskall (gk) correlation, echo=FALSE, message=FALSE, warning=FALSE}
+#GK per sub
+gk_df_dolmain_collapsed<-expFig%>%
+  dplyr::group_by(group,sub_name)%>%
+  dplyr::summarize(gk=rcorr.cens(acc, conf, outx = TRUE)[2])
+
+```
+
+
+<u><font size="6">Correlations to SPQB & PANSS (Table 2)</font></u>
+
+```{r looking at correlation to PANSS, echo=FALSE, warning=FALSE}
+
+SDT_df_psy = filter(SDT_df, group == "PSY")
+
+gk_df_dolmain_collapsed_scz = filter(gk_df_dolmain_collapsed, group == "PSY")
+
+panssDF = inner_join(inner_join(gk_df_dolmain_collapsed_scz,SDT_df_psy,by="sub_name"),PSY_sub_data,by="sub_name") %>% ungroup() %>% dplyr::select(gk,dprime:general.panss)
+
+panss_corr_with_sig = corstars(as.matrix(panssDF), method = "pearson")
+
+PanssCorrUncorrected = rcorr(as.matrix(panssDF), type = "pearson")
+
+panss_corr_with_sig_corrected = corstars(as.matrix(panssDF), method = "pearson", bonferroni_correcion_factor = 12)
+
+```
+
+
+```{r Correlation to SPQB, echo=FALSE, message=FALSE, warning=FALSE}
+SPQB_tbl = read.csv("../Data/Healthy_SPQB_tbl.csv", TRUE)
+
+SDT_HC_df <- SDT_df[SDT_df$group == "HC",]
+
+gk_df_dolmain_collapsed_hc = filter(gk_df_dolmain_collapsed, group == "HC")
+
+SDT_HC_df = merge(gk_df_dolmain_collapsed_hc[,2:3], SDT_HC_df, by = "sub_name")
+
+SDT_HC_df = merge(SDT_HC_df, SPQB_tbl, by = "sub_name")
+
+spq_df = dplyr::select(SDT_HC_df, "gk" ,"dprime", "c", "SPQB_Cognitive", "SPQB_Interpersonal", "SPQB_Organization", "SPQB_Total")
+
+spqb_corr_with_sig = corstars(as.matrix(spq_df), method = "pearson")
+
+SpqbCorrUncorrected = rcorr(as.matrix(spq_df), type = "pearson")
+
+spqb_corr_with_sig_corrected = corstars(as.matrix(spq_df), method = "pearson", bonferroni_correcion_factor = 12)
+
+```
+<center>
+
+```{r Printing PANSS & SPQB correlation tables}
+
+kbl(spqb_corr_with_sig[4:7,1:3], escape = F, digits = 4, align = 'l', caption = "Uncorrected") %>% kable_styling(bootstrap_options = c("striped", "hover"), full_width = F, position = "float_left") %>% footnote(general = "$^{**}$p < 0.01", escape = F)
+
+kbl(panss_corr_with_sig[4:7,1:3], escape = T, digits = 4, align = 'l', caption = "Uncorrected") %>% kable_styling(bootstrap_options = c("striped", "hover"), full_width = F, position = "left") %>% footnote(general = "$^{**}$p < 0.01", escape = F)
+
+```
+
+</center>
+
+
+```{r classifier calculations, echo=FALSE, fig.height=6, fig.width=6, message=FALSE, warning=FALSE, results='hide'}
+
+HCTemporalFit = lm(formula = mean_SoA~mag, data = GroupSoA[GroupSoA$domain_name == "Temporal" & GroupSoA$group == "HC",])
+SCZTemporalFit = lm(formula = mean_SoA~mag, data = GroupSoA[GroupSoA$domain_name == "Temporal" & GroupSoA$group == "PSY",])
+HCSpatialFit = lm(formula = mean_SoA~mag, data = GroupSoA[GroupSoA$domain_name == "Spatial" & GroupSoA$group == "HC",])
+SCZSpatialFit = lm(formula = mean_SoA~mag, data = GroupSoA[GroupSoA$domain_name == "Spatial" & GroupSoA$group == "PSY",])
+
+AllFits = data.frame(matrix(ncol = 4, nrow = 4))
+colomnNames <- c("group","aspect","intercept","coefficient")
+colnames(AllFits) <- colomnNames
+AllFits[1,] = c("HC", "Temporal", HCTemporalFit$coefficients[1], HCTemporalFit$coefficients[2])
+AllFits[2,] = c("HC", "Spatial", HCSpatialFit$coefficients[1], HCSpatialFit$coefficients[2])
+AllFits[3,] = c("PSY", "Temporal", SCZTemporalFit$coefficients[1], SCZTemporalFit$coefficients[2])
+AllFits[4,] = c("PSY", "Spatial", SCZSpatialFit$coefficients[1], SCZSpatialFit$coefficients[2])
+
+
+htyTempText = sprintf("y = %.2fx + %.2f", round(HCTemporalFit$coefficients[2], digits = 2), round(HCTemporalFit$coefficients[1], digits = 2))
+sczTempText = sprintf("y = %.2fx + %.2f", round(SCZTemporalFit$coefficients[2], digits = 2), round(SCZTemporalFit$coefficients[1], digits = 2))
+htySpatText = sprintf("y = %.2fx + %.2f", round(HCSpatialFit$coefficients[2], digits = 2), round(HCSpatialFit$coefficients[1], digits = 2))
+sczSpatText = sprintf("y = %.2fx + %.2f", round(SCZSpatialFit$coefficients[2], digits = 2), round(SCZSpatialFit$coefficients[1], digits = 2))
+
+IndvLmSoA = data.frame(matrix(ncol = 5, nrow = 2*length(unique(IndividualSoA$sub_name))))
+colomnNames <- c("sub_name","aspect","intercept","coefficient","group")
+colnames(IndvLmSoA) <- colomnNames
+odd_indexes<-seq(1,nrow(IndvLmSoA),2)
+even_indexes<-seq(2,nrow(IndvLmSoA),2)
+IndvLmSoA[odd_indexes,1] = unique(IndividualSoA$sub_name)
+IndvLmSoA[even_indexes,1] = unique(IndividualSoA$sub_name)
+
+for (index in seq(1,nrow(IndvLmSoA), 2))
+{
+  sub_name = IndvLmSoA[index,1]
+
+  TempModel = lm(formula = SoA~mag, data = IndividualSoA[IndividualSoA$domain_name == "Temporal" &
+             IndividualSoA$sub_name == sub_name,])
+  SpatModel = lm(formula = SoA~mag, data = IndividualSoA[IndividualSoA$domain_name == "Spatial" &
+             IndividualSoA$sub_name == sub_name,])
+  IndvLmSoA[index,2:5] = c("Temporal", TempModel$coefficients[1], TempModel$coefficients[2],
+                                                 IndividualSoA[IndividualSoA$sub_name == sub_name, "group"][1])
+  IndvLmSoA[index+1,2:5] = c("Spatial", SpatModel$coefficients[1], SpatModel$coefficients[2],
+                                                 IndividualSoA[IndividualSoA$sub_name == sub_name, "group"][1])
+}
+
+IndvLmSoA$intercept = as.numeric(IndvLmSoA$intercept)
+IndvLmSoA$coefficient = as.numeric(IndvLmSoA$coefficient)
+
+
+SampleTempSubNum = "23"
+SampleSpatSubNum = "5"
+
+SampleTempSubFit = IndvLmSoA[str_detect(IndvLmSoA$sub_name, str_c("HC", SampleTempSubNum, sep = " ")) & IndvLmSoA$aspect == "Temporal",]
+SampleSpatSubFit = IndvLmSoA[str_detect(IndvLmSoA$sub_name, str_c("PSY", SampleSpatSubNum, sep = " ")) & IndvLmSoA$aspect == "Spatial",]
+
+AllFits[5,] = c("Sample subject", "Temporal", IndvLmSoA[str_detect(IndvLmSoA$sub_name, str_c("HC", SampleTempSubNum, sep = " ")) & IndvLmSoA$aspect == "Temporal","intercept"], IndvLmSoA[str_detect(IndvLmSoA$sub_name, str_c("HC", SampleTempSubNum, sep = " ")) & IndvLmSoA$aspect == "Temporal","coefficient"])
+
+AllFits[6,] = c("Sample subject", "Spatial", IndvLmSoA[str_detect(IndvLmSoA$sub_name, str_c("PSY", SampleSpatSubNum, sep = " ")) & IndvLmSoA$aspect == "Spatial","intercept"], IndvLmSoA[str_detect(IndvLmSoA$sub_name, str_c("PSY", SampleSpatSubNum, sep = " ")) & IndvLmSoA$aspect == "Spatial","coefficient"])
+
+AllFits$intercept = as.numeric(AllFits$intercept)
+AllFits$coefficient = as.numeric(AllFits$coefficient)
+
+SampleTempSubText = sprintf("y = %.2fx + %.2f", round(SampleTempSubFit$coefficient, digits = 2), round(SampleTempSubFit$intercept, digits = 2))
+SampleSpatSubText = sprintf("y = %.2fx + %.2f", round(SampleSpatSubFit$coefficient, digits = 2), round(SampleSpatSubFit$intercept, digits = 2))
+
+SampleSubjectPoints = data.frame(matrix(ncol = 3, nrow = 4))
+colNames <- c("mag","soa", "aspect")
+colnames(SampleSubjectPoints) <- colNames
+SampleSubjectPoints[1,] = c(0, IndividualSoA[str_detect(IndividualSoA$sub_name, str_c("HC", SampleTempSubNum, sep = " ")) & IndividualSoA$domain_name == "Temporal" & IndividualSoA$mag == 0, "SoA"], "Temporal")
+SampleSubjectPoints[2,] = c(1, IndividualSoA[str_detect(IndividualSoA$sub_name, str_c("HC", SampleTempSubNum, sep = " ")) & IndividualSoA$domain_name == "Temporal" & IndividualSoA$mag == 1, "SoA"], "Temporal")
+SampleSubjectPoints[3,] = c(2, IndividualSoA[str_detect(IndividualSoA$sub_name, str_c("HC", SampleTempSubNum, sep = " ")) & IndividualSoA$domain_name == "Temporal" & IndividualSoA$mag == 2, "SoA"], "Temporal")
+SampleSubjectPoints[4,] = c(3, IndividualSoA[str_detect(IndividualSoA$sub_name, str_c("HC", SampleTempSubNum, sep = " ")) & IndividualSoA$domain_name == "Temporal" & IndividualSoA$mag == 3, "SoA"], "Temporal")
+SampleSubjectPoints[5,] = c(0, IndividualSoA[str_detect(IndividualSoA$sub_name, str_c("PSY", SampleSpatSubNum, sep = " ")) & IndividualSoA$domain_name == "Spatial" & IndividualSoA$mag == 0, "SoA"], "Spatial")
+SampleSubjectPoints[6,] = c(1, IndividualSoA[str_detect(IndividualSoA$sub_name, str_c("PSY", SampleSpatSubNum, sep = " ")) & IndividualSoA$domain_name == "Spatial" & IndividualSoA$mag == 1, "SoA"], "Spatial")
+SampleSubjectPoints[7,] = c(2, IndividualSoA[str_detect(IndividualSoA$sub_name, str_c("PSY", SampleSpatSubNum, sep = " ")) & IndividualSoA$domain_name == "Spatial" & IndividualSoA$mag == 2, "SoA"], "Spatial")
+SampleSubjectPoints[8,] = c(3, IndividualSoA[str_detect(IndividualSoA$sub_name, str_c("PSY", SampleSpatSubNum, sep = " ")) & IndividualSoA$domain_name == "Spatial" & IndividualSoA$mag == 3, "SoA"], "Spatial")
+
+SampleSubjectPoints$mag = as.numeric(SampleSubjectPoints$mag)
+SampleSubjectPoints$soa = as.numeric(SampleSubjectPoints$soa)
+```
+
+<br><br>
+   
+<u><font size="6">Classification Plot (Figure 3)</font></u>
+
+
+```{r classifier plots, echo=FALSE, fig.height=8.4, fig.width=14.5, message=FALSE, warning=FALSE}
+
+GroupSoA[nrow(GroupSoA)+1,] = c("Sample subject", "Temporal", 0, SampleSubjectPoints[SampleSubjectPoints$aspect == 'Temporal' & SampleSubjectPoints$mag == 0, "soa"], 0, 0)
+GroupSoA[nrow(GroupSoA)+1,] = c("Sample subject", "Temporal", 1, SampleSubjectPoints[SampleSubjectPoints$aspect == 'Temporal' & SampleSubjectPoints$mag == 1, "soa"], 0, 0)
+GroupSoA[nrow(GroupSoA)+1,] = c("Sample subject", "Temporal", 2, SampleSubjectPoints[SampleSubjectPoints$aspect == 'Temporal' & SampleSubjectPoints$mag == 2, "soa"], 0, 0)
+GroupSoA[nrow(GroupSoA)+1,] = c("Sample subject", "Temporal", 3, SampleSubjectPoints[SampleSubjectPoints$aspect == 'Temporal' & SampleSubjectPoints$mag == 3, "soa"], 0, 0)
+
+GroupSoA[nrow(GroupSoA)+1,] = c("Sample subject", "Spatial", 0, SampleSubjectPoints[SampleSubjectPoints$aspect == 'Spatial' & SampleSubjectPoints$mag == 0, "soa"], 0, 0)
+GroupSoA[nrow(GroupSoA)+1,] = c("Sample subject", "Spatial", 1, SampleSubjectPoints[SampleSubjectPoints$aspect == 'Spatial' & SampleSubjectPoints$mag == 1, "soa"], 0, 0)
+GroupSoA[nrow(GroupSoA)+1,] = c("Sample subject", "Spatial", 2, SampleSubjectPoints[SampleSubjectPoints$aspect == 'Spatial' & SampleSubjectPoints$mag == 2, "soa"], 0, 0)
+GroupSoA[nrow(GroupSoA)+1,] = c("Sample subject", "Spatial", 3, SampleSubjectPoints[SampleSubjectPoints$aspect == 'Spatial' & SampleSubjectPoints$mag == 3, "soa"], 0, 0)
+
+GroupSoA$mag = as.numeric(GroupSoA$mag)
+GroupSoA$mean_SoA = as.numeric(GroupSoA$mean_SoA)
+
+font_size = 3
+
+TempClassifierPlot <- ggplot(data=filter(GroupSoA, domain_name == 'Temporal'), aes(x=mag, y=mean_SoA, color=factor(group))) +
+  geom_abline(data = IndvLmSoA[IndvLmSoA$aspect == "Temporal",], aes(intercept = intercept, slope = coefficient, color=factor(group)), alpha = 0.2, size = 0.8) +
+  geom_point(size=3.5, aes(shape=factor(group), fill = factor(group))) +
+  geom_abline(data = AllFits[AllFits$aspect == "Temporal" & AllFits$group != "Sample subject",], size=1.2, aes(color=factor(group), shape=factor(group), intercept = intercept, slope = coefficient)) +
+  geom_abline(data = AllFits[AllFits$aspect == "Temporal" & AllFits$group == "Sample subject",], size=1.2, aes(color=factor(group), shape=factor(group), intercept = intercept, slope = coefficient), linetype="longdash") +
+  # annotate("text", x = 2.57, y = 0.572, label = sczTempText, angle=-13.5, size = font_size, fontface = 'bold.italic') +
+  # annotate("text", x = 2.57, y = 0.368, label = SampleTempSubText, angle=-28.3, size = font_size, fontface = 'bold.italic') +
+  # annotate("text", x = 1.48, y = 0.584, label="Sample subject #1", angle=-24.3, size = font_size, color="red", fontface = 'bold') +
+  # annotate("text", x = 2.57, y = 0.248, label = htyTempText, angle=-32.6, size = font_size, fontface = 'bold.italic') +
+  scale_shape_manual("Group",values=c(21,24,15)) +
+  scale_color_manual("Group",values=c("royalblue", "lightgoldenrod4", "red")) +
+  scale_fill_manual("Group",values=c("royalblue", "lightgoldenrod4", "red")) +
+  ylab("SoA") +
+  xlab("Delay (ms)") +
+  ggtitle("SoA Linear Fit (Temporal)") +
+  scale_y_continuous(breaks=seq(0,1,by = 0.2), limits = c(0,1), minor_breaks = NULL, labels = gsub("\\.0$", "", as.character(round(seq(0,1,by = 0.2),digits = 2)))) +
+  scale_x_continuous(labels=c("0","100","200","300")) +
+  get_plots_theme() + guides(color = guide_legend(override.aes = list(linetype = c(1, 1, 3)))) + labs(tag = "A")
+
+
+SpatClassifierPlot <- ggplot(data=filter(GroupSoA, domain_name == 'Spatial'), aes(x=mag, y=mean_SoA, color=factor(group))) +
+  geom_abline(data = IndvLmSoA[IndvLmSoA$aspect == "Spatial",], aes(intercept = intercept, slope = coefficient, color=factor(group)), alpha = 0.2, size = 0.8) +
+  geom_point(size=3.5, aes(shape=factor(group), fill = factor(group))) +
+  geom_abline(data = AllFits[AllFits$aspect == "Spatial" & AllFits$group != "Sample subject",], size=1.2, aes(color=factor(group), shape=factor(group), intercept = intercept, slope = coefficient)) +
+  geom_abline(data = AllFits[AllFits$aspect == "Spatial" & AllFits$group == "Sample subject",], size=1.2, aes(color=factor(group), shape=factor(group), intercept = intercept, slope = coefficient), linetype="longdash") +
+  # annotate("text", x = 2.57, y = 0.632, label = sczSpatText, angle=-11.8, size = font_size, fontface = 'bold.italic') +
+  # annotate("text", x = 2.57, y = 0.535, label = SampleSpatSubText, angle=-13.5, size = font_size, fontface = 'bold.italic') +
+  # annotate("text", x = 1.48, y = 0.661, label="Sample subject #2", angle=-13, size = font_size, color="red", fontface = 'bold') +
+  # annotate("text", x = 2.57, y = 0.214, label = htySpatText, angle=-30.2, size = font_size, fontface = 'bold.italic') +
+  scale_shape_manual("Group",values=c(21,24,15)) +
+  scale_color_manual("Group",values=c("royalblue", "lightgoldenrod4", "red")) +
+  scale_fill_manual("Group",values=c("royalblue", "lightgoldenrod4", "red")) +
+  ylab("SoA") +
+  xlab("Angle (degrees)") +
+  ggtitle("SoA Linear Fit (Spatial)") +
+  scale_y_continuous(breaks=seq(0,1,by = 0.2), limits = c(0,1), minor_breaks = NULL, labels = gsub("\\.0$", "", as.character(round(seq(0,1,by = 0.2),digits = 2)))) +
+  scale_x_continuous(labels=c("0","6","10","14")) +
+  get_plots_theme() + guides(color = guide_legend(override.aes = list(linetype = c(1, 1, 3)))) + labs(tag = " ")
+```
+
+```{r Classifier accuracy - all trials vs. first block, echo=FALSE, message=FALSE, warning=FALSE}
+
+### Comment out to run the full clasification process from scratch
+
+load(file = "Classifier_Full_And_FirstBlock_Datasets.RData")
+
+### Uncomment to run the full classification process from scratch
+
+# LeaveOutVector = c(6, 12, 18, 24)
+# TrialsFracVector_Full = c(1,0.9,0.8,0.7,0.6,0.5)
+# TrialsFracVector_FirstBlock = c(1,5/6,4/6,3/6)
+# ClassifierDF_Full = data.frame(matrix(ncol = 5, nrow = 0))
+# ClassifierDF_FirstBlock = data.frame(matrix(ncol = 5, nrow = 0))
+# cols <- c("LeaveOutNum", "TrialsFrac", "HC Correct", "PSY Correct", "Accuracy")
+# colnames(ClassifierDF_Full) <- cols
+# colnames(ClassifierDF_FirstBlock) <- cols
+# expForClassification <- read.csv("../Data/All_Participants_Trial_By_Trial_Data.csv", TRUE)
+# expFirstBlock = expForClassification[expForClassification$trial_num %in% seq(1,48),]
+# ActualClassifierAccuracy = NULL
+# 
+# 
+# for (LeaveOutIndex in 1:length(LeaveOutVector))
+# {
+#   for (TrialsCountIndexFull in 1:length(TrialsFracVector_Full))
+#   {
+#     result = BetaClassifier_faster(LeaveOutVector[LeaveOutIndex], 10000, TrialsFracVector_Full[TrialsCountIndexFull], seed = seed)
+#     
+#     # Keeping classifier accuracy distribution in all iterations for a comparision with scrambled labels classifier
+#     if (LeaveOutVector[LeaveOutIndex] == 6 & TrialsFracVector_Full[TrialsCountIndexFull] == 1)
+#     {
+#       results_for_bar_plot = as.data.frame(result[1])
+#       ActualClassifierAccuracy = unlist(result[2])
+#     }
+#     
+#     result = as.data.frame(result[1])
+#     HC_res = filter(result, str_detect(sub_name, "Healthy"))
+#     PSY_res = filter(result, str_detect(sub_name, "Psychosis"))
+#     HC_Correct = round(sum(HC_res$Correct)/(sum(HC_res$Correct) + sum(HC_res$Incorrect)), digits = 2)
+#     PSY_Correct = round(sum(PSY_res$Correct)/(sum(PSY_res$Correct) + sum(PSY_res$Incorrect)), digits = 2)
+#     Accuracy = round(sum(result$Correct)/(sum(result$Correct) + sum(result$Incorrect)), digits = 2)
+#     ClassifierDF_Full[nrow(ClassifierDF_Full)+1,] = c(LeaveOutVector[LeaveOutIndex], TrialsFracVector_Full[TrialsCountIndexFull], HC_Correct, PSY_Correct, Accuracy)
+#   }
+# 
+#   for (TrialsCountIndexFirstBlock in 1:length(TrialsFracVector_FirstBlock))
+#   {
+#     result = BetaClassifier_faster(LeaveOutVector[LeaveOutIndex], 10000, TrialsFracVector_FirstBlock[TrialsCountIndexFirstBlock], seed = seed, expFile = expFirstBlock)
+#     result = as.data.frame(result[1])
+#     HC_res = filter(result, str_detect(sub_name, "Healthy"))
+#     PSY_res = filter(result, str_detect(sub_name, "Psychosis"))
+#     HC_Correct = round(sum(HC_res$Correct)/(sum(HC_res$Correct) + sum(HC_res$Incorrect)), digits = 2)
+#     PSY_Correct = round(sum(PSY_res$Correct)/(sum(PSY_res$Correct) + sum(PSY_res$Incorrect)), digits = 2)
+#     Accuracy = round(sum(result$Correct)/(sum(result$Correct) + sum(result$Incorrect)), digits = 2)
+#     ClassifierDF_FirstBlock[nrow(ClassifierDF_FirstBlock)+1,] = c(LeaveOutVector[LeaveOutIndex], TrialsFracVector_FirstBlock[TrialsCountIndexFirstBlock], HC_Correct, PSY_Correct, Accuracy)
+#   }
+# }
+
+
+ClassifierDF_Full$Accuracy <- as.numeric(ClassifierDF_Full$Accuracy)
+ClassifierDF_FirstBlock$Accuracy <- as.numeric(ClassifierDF_FirstBlock$Accuracy)
+
+ClassifierDF_Full$TrialsUsed = ClassifierDF_Full$TrialsFrac * 240
+ClassifierDF_FirstBlock$TrialsUsed = ClassifierDF_FirstBlock$TrialsFrac * 48
+
+ClassifierDF_Full$LeaveOutPercentage = ClassifierDF_Full$LeaveOutNum / 30 * 100
+ClassifierDF_FirstBlock$LeaveOutPercentage = ClassifierDF_FirstBlock$LeaveOutNum / 30 * 100
+
+ClassifierDF_Full$TrialsFrac_Percentage = ClassifierDF_Full$TrialsFrac * 100
+ClassifierDF_FirstBlock$TrialsFrac_Percentage = ClassifierDF_FirstBlock$TrialsFrac * 100
+
+classifier_color_scale = c("chartreuse3","azure4", "darkorchid3", "orange3")
+
+class_acc<-ggplot(data = ClassifierDF_Full, aes(x = TrialsFrac, y = Accuracy, 
+                                   color = as.factor(LeaveOutPercentage), group = LeaveOutPercentage)) + 
+  geom_point(position = position_jitterdodge(dodge.width = 0.05, jitter.height = 0.01, seed = seed), size = 2, alpha = 0.75) + 
+  geom_line(position = position_jitterdodge(dodge.width = 0.05, jitter.height = 0.01, seed = seed), size = 1)+
+  labs(color="% Participants Left Out") +
+  xlab("Proportion Trials Used") +
+  ylab("Classifier Accuracy") +
+  scale_y_continuous(breaks=seq(0.5,1,by = 0.1), limits = c(0.5,1), minor_breaks = NULL, labels = gsub("\\.0$", "", as.character(round(seq(0.5,1,by = 0.1),digits = 2)))) +
+  ggtitle("Entire Experiment") + 
+  scale_x_reverse(breaks = seq(1,0.5,by = -0.1), labels = gsub("\\.0$", "", as.character(round(seq(1,0.5,by = -0.1),digits = 2)))) + 
+  scale_colour_manual(values = classifier_color_scale)+
+  get_plots_theme() + theme(panel.grid.major.y = element_line(colour = "grey30"), panel.grid.minor.y = element_blank()) + labs(tag = "C")
+
+
+class_acc_48<-ggplot(data = ClassifierDF_FirstBlock, aes(x = TrialsFrac, y = Accuracy, 
+                                              color = as.factor(LeaveOutPercentage), group = LeaveOutPercentage)) + 
+  geom_point(position = position_jitterdodge(dodge.width = 0.0125, jitter.height = 0.01, seed = seed), size = 2, alpha = 0.75) + 
+  geom_line(position = position_jitterdodge(dodge.width = 0.0125, jitter.height = 0.01, seed = seed), size = 1)+
+  labs(color="% Participants Left Out") +
+  xlab("Proportion Trials Used") +
+  ylab("Classifier Accuracy") +
+  scale_y_continuous(breaks=seq(0.5,1,by = 0.1), limits = c(0.5,1), minor_breaks = NULL, labels = gsub("\\.0$", "", as.character(round(seq(0.5,1,by = 0.1),digits = 2)))) +
+  ggtitle("First Block") + 
+  scale_x_reverse(breaks = round(seq(1,0.5,by = -(1/6)),digits = 2), labels = gsub("\\.0$", "", as.character(round(seq(1,0.5,by = -(1/6)),digits = 2)))) +
+  scale_colour_manual(values = classifier_color_scale)+
+  get_plots_theme() + theme(panel.grid.major.y = element_line(colour = "grey30"), panel.grid.minor.y = element_blank()) + labs(tag = " ")
+
+```
+
+```{r Classifier accuracy/sensitivity/specificity, echo=FALSE, message=FALSE, warning=FALSE}
+#results_for_bar_plot = BetaClassifier_faster(6, 10000, seed = seed)
+load("results_for_bar_plot.RData")
+tp = sum(filter(results_for_bar_plot, str_detect(sub_name, "Psychosis"))[,"Correct"])
+fp = sum(filter(results_for_bar_plot, str_detect(sub_name, "Healthy"))[,"Incorrect"])
+tn = sum(filter(results_for_bar_plot, str_detect(sub_name, "Healthy"))[,"Correct"])
+fn = sum(filter(results_for_bar_plot, str_detect(sub_name, "Psychosis"))[,"Incorrect"])
+sensitivity = tp / (tp + fn)
+specificity = tn / (tn + fp)
+accuracy = (tp + tn) / (tp +tn + fp + fn)
+
+acc_sen_spec_DF = data.frame(matrix(ncol = 2, nrow = 3))
+colNamesAcc <- c("measure","value")
+colnames(acc_sen_spec_DF) <- colNamesAcc
+acc_sen_spec_DF[1,] = c("Accuracy", accuracy)
+acc_sen_spec_DF[2,] = c("Sensitivity", sensitivity)
+acc_sen_spec_DF[3,] = c("Specificity", specificity)
+acc_sen_spec_DF$value = as.numeric(acc_sen_spec_DF$value)
+acc_sen_spec_DF$measure = as.factor(acc_sen_spec_DF$measure)
+
+acc_sen_spec_plot <- ggplot(acc_sen_spec_DF) + geom_bar(aes(x = measure, y = value, fill = measure), stat = "identity") + get_plots_theme() + theme(axis.title.x = element_blank(), axis.title.y = element_blank(), legend.position = "none", axis.text.x = element_text(angle = 60)) + scale_fill_manual(values=c("darkgreen", "lightgoldenrod4", "royalblue")) + scale_y_continuous(breaks=c(0.5,0.6,0.7,0.8,0.9,1), minor_breaks = NULL) + coord_cartesian(ylim=c(0.5,1)) + labs(tag = "B")
+
+acc_sen_spec_DF$measure = reorder(acc_sen_spec_DF$measure, c(3,2,1))
+
+acc_sen_spec_plot_horiz <- ggplot(acc_sen_spec_DF) + geom_bar(aes(x = measure, y = value, fill = measure), stat = "identity") + get_plots_theme() + theme(axis.title.x = element_blank(), axis.title.y = element_blank(), legend.position = "none") + scale_fill_manual(values=c( "royalblue", "lightgoldenrod4", "darkgreen")) + scale_y_continuous(breaks=seq(0,1,by = 0.1), minor_breaks = NULL, limits = c(0,1), labels = gsub("\\.0$", "", as.character(seq(0,1,by = 0.1)))) + coord_flip() + labs(tag = "B")
+```
+
+<center>
+
+```{r classifier combined plot, echo=FALSE, message=FALSE, warning=FALSE, fig.height=10, fig.width=6.5}
+
+ggarrange(ggarrange(TempClassifierPlot, SpatClassifierPlot, common.legend = TRUE, legend = "bottom") + theme(plot.margin = margin(0,0,0.25,0, "cm")), acc_sen_spec_plot_horiz, ggarrange(class_acc, class_acc_48, common.legend = TRUE, legend = "bottom", align = 'hv') + theme(plot.margin = margin(0.25,0,0,0, "cm")), nrow = 3, heights = c(3,1,3), widths = c(1,0.5,1), align = 'h')
+
+```
+</center>
+
+<center><b><font size="8">Supplementary figures and tables</font></b></center>
+   
+<u><font size="6">Group comparision of SoA sensitivity & bias (Figure S1)</font></u>
+<br><br>
+   
+<center>
+
+```{r Plotting sensitivity, criterion,echo=FALSE, message = FALSE}
+
+smry_SDT_for_plot_df<-SDT_df%>%
+  pivot_longer(.,dprime:c,names_to = "measure")%>%
+  group_by(group,measure)%>%
+  dplyr::summarize(mean=mean(value))
+
+plot_dprime<-ggplot(data =SDT_df, aes(x=group, y=dprime))+
+  geom_violin(alpha=.4, scale = "width", aes(fill=group))+
+  geom_jitter(position=position_jitter(0.2, seed = seed), size = 1.5, aes(shape=group), alpha = 0.15, fill = "black")+
+   geom_point(data = filter(smry_SDT_for_plot_df,measure == "dprime"), aes(x=group,y=mean, shape=group, fill = group),size=3.5)+
+  scale_y_continuous(name="Sensitivity")+
+  geom_hline(yintercept=0,linetype="dashed")+
+  scale_fill_manual("Group", values = c("royalblue", "lightgoldenrod3"))+
+  scale_color_manual("Group", values=c("royalblue", "lightgoldenrod4")) +
+  scale_shape_manual("Group", values=c(21,24)) +
+  theme_minimal()+
+  get_plots_theme() +
+  theme(legend.position = "none", panel.grid.major.y = element_line(colour = "gray"),
+               panel.grid.minor.y = element_line(colour = "white"), panel.border = element_rect(color = 'white', fill=NA, size=0.5), axis.title.x =element_blank()) + coord_cartesian(ylim = c(-0.5, 3.5)) + labs(tag = "A")
+
+plot_c<-ggplot(data =SDT_df, aes(x=group, y=c))+
+  geom_violin(alpha=.4, scale = "width", aes(fill=group))+
+  geom_jitter(position=position_jitter(0.2, seed = seed), size = 1.5, aes(shape=group), alpha = 0.15, fill = "black")+
+   geom_point(data = filter(smry_SDT_for_plot_df,measure == "c"), aes(x=group,y=mean, shape=group, fill = group),size=3.5)+
+  geom_hline(yintercept=0,linetype="dashed")+
+  scale_y_continuous(name="Bias")+
+  scale_fill_manual("Group", values = c("royalblue", "lightgoldenrod3"))+
+  scale_color_manual("Group", values=c("royalblue", "lightgoldenrod4")) +
+  scale_shape_manual("Group", values=c(21,24)) +
+  theme_minimal()+
+  get_plots_theme() +
+  theme(legend.position = "none", panel.grid.major.y = element_line(colour = "gray"),
+               panel.grid.minor.y = element_line(colour = "white"), panel.border = element_rect(color = 'white', fill=NA, size=0.5), axis.title.x =element_blank(), panel.background = element_blank()) + coord_cartesian(ylim = c(-1.5, 0.5)) + labs(tag = "B")
+
+plot_SDT_combined<-plot_grid(plot_dprime,plot_c,nrow=2,ncol=1, label_size = 12, align = "v")
+plot_SDT_combined
+```
+</center>
+<br><br>
+   
+<u><font size="6">Confidence for incorrect trials (Figure S2)</font></u>
+<center>
+<br><br>   
+```{r Plotting confidence for incorrect trials, echo=FALSE, message=FALSE, warning=FALSE, fig.width=7, fig.height=3.6}
+incorrect_confidence_plot = ggarrange(ConfTempGrpIncorrect, ConfSpatGrpIncorrect, ncol = 2, align = "h", common.legend = TRUE, legend = "bottom")
+
+incorrect_confidence_plot_titled = annotate_figure(incorrect_confidence_plot, top = text_grob(expression(~ ~ ~ ~ ~ ~ ~ ~underline("Temporal")~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~underline("Spatial")), face = "bold", size = 20, hjust = 0.5))
+
+incorrect_confidence_plot_titled
+```
+
+</center>
+<br><br>
+   
+<u><font size="6">Classification accuracy compared to random (Figure S3)</font></u>
+
+```{r classifier accuracy compared to random, echo=FALSE, fig.height=5, fig.width=10, message=FALSE, warning=FALSE, fig.align="center"}
+load("ActualAndScrambledClassifierAccuracy.RData")
+
+#ScrambledClassifierAccuracy = unlist(BetaClassifier_faster(6, 10000, scrambled = T)[2])
+
+ClassifierDensityDF = data.frame(matrix(ncol = 2, nrow = length(ActualClassifierAccuracy) + length(ScrambledClassifierAccuracy)))
+cols <- c("Accuracy", "Condition")
+colnames(ClassifierDensityDF) <- cols
+
+ClassifierDensityDF[1:length(ActualClassifierAccuracy), "Accuracy"] = ActualClassifierAccuracy
+ClassifierDensityDF[1:length(ActualClassifierAccuracy), "Condition"] = "Actual labels"
+ClassifierDensityDF[(length(ActualClassifierAccuracy) + 1):(length(ActualClassifierAccuracy) + length(ScrambledClassifierAccuracy)), "Accuracy"] = ScrambledClassifierAccuracy
+ClassifierDensityDF[(length(ActualClassifierAccuracy) + 1):(length(ActualClassifierAccuracy) + length(ScrambledClassifierAccuracy)), "Condition"] = "Scrambled labels"
+
+ks = ks.test(ActualClassifierAccuracy, ScrambledClassifierAccuracy)
+sprintf("Two-sample Kolmogorov-Smirnov test results: p = %1.0f, D = %.2f", ks$p.value, ks$statistic)
+
+ggplot(data=ClassifierDensityDF, aes(x = Accuracy, fill = Condition)) + geom_density(adjust = 3.8, alpha = 0.35) + xlim(c(0,1)) + geom_vline(xintercept = mean(ClassifierDensityDF[ClassifierDensityDF$Condition == "Actual labels", "Accuracy"]), linetype="dotted", size=1.5, color = "red") + geom_vline(xintercept = mean(ClassifierDensityDF[ClassifierDensityDF$Condition == "Scrambled labels", "Accuracy"]), linetype="dotted", size=1.5, color = "blue") + scale_x_continuous(breaks = c(0,0.5,1), labels = gsub("\\.0$", "", as.character(seq(0,1,by = 0.5)))) + get_plots_theme() + ylab("Density")
+```
+
+<br><br>
+<font size="6"><u>Model Comparision of SoA (Table S3)</u></font>   
+   
+<font size="4"> 1) Random Effect = intercept + Alteration Magnitude</font>  
+
+``` {r SoA models Random Intercept + Random Slope of Mag, echo=FALSE, message=FALSE}
+### SoA models
+## Random Effect= intercept + Slope of Mag = RIM
+
+# Models with ME only
+soa_mdl_RIM_0 = glmer(response ~ domain + (1+mag_centered|ID), data=expMM, family = binomial)
+soa_mdl_RIM_1 = glmer(response ~ mag_centered + (1+mag_centered|ID), data=expMM, family = binomial)
+soa_mdl_RIM_2 = glmer(response ~ group + (1+mag_centered|ID), data=expMM, family = binomial)
+soa_mdl_RIM_3 = glmer(response ~ mag_centered + domain + (1+mag_centered|ID), data=expMM, family = binomial)
+soa_mdl_RIM_4 = glmer(response ~ mag_centered + domain + group +(1+mag_centered|ID), data=expMM, family = binomial)
+
+# Models with interactions
+soa_mdl_RIM_5 = glmer(response ~ mag_centered*domain +(1+mag_centered|ID), data=expMM, family = binomial)
+soa_mdl_RIM_6 = glmer(response ~ mag_centered*group + (1+mag_centered|ID), data=expMM, family = binomial)
+soa_mdl_RIM_7 = glmer(response ~ mag_centered*group + domain + (1+mag_centered|ID), data=expMM, family = binomial)
+soa_mdl_RIM_8 = glmer(response ~ mag_centered*domain + group + (1+mag_centered|ID), data=expMM, family = binomial)
+soa_mdl_RIM_9 = glmer(response ~ mag_centered*domain*group+(1+mag_centered|ID), data=expMM, family = binomial)
+
+# Creating a table of model comparisons (soa_mdl_RIM_anova)
+soa_mdl_RIM_anova = anova(soa_mdl_RIM_0, soa_mdl_RIM_1, soa_mdl_RIM_2, soa_mdl_RIM_3, soa_mdl_RIM_4, soa_mdl_RIM_5, soa_mdl_RIM_6, soa_mdl_RIM_7, soa_mdl_RIM_8, soa_mdl_RIM_9)
+
+# Dropping all columns but model num, BIC, AIC
+soa_mdl_RIM_anova_clean<-soa_mdl_RIM_anova%>%
+  mutate(model_num=row.names(soa_mdl_RIM_anova))%>% #getting model num from row name
+  dplyr::select(c("model_num","AIC","BIC"))
+
+# Reordering so that models are according to numeric order
+soa_mdl_RIM_anova_clean$model_num<- factor(soa_mdl_RIM_anova_clean$model_num,levels= str_sort(soa_mdl_RIM_anova_clean$model_num, numeric = TRUE))
+soa_mdl_RIM_anova_clean<-arrange(soa_mdl_RIM_anova_clean,model_num)
+
+# Creating the list of models
+soa_model_list<-c(soa_mdl_RIM_0, soa_mdl_RIM_1, soa_mdl_RIM_2, soa_mdl_RIM_3, soa_mdl_RIM_4, soa_mdl_RIM_5, soa_mdl_RIM_6, soa_mdl_RIM_7, soa_mdl_RIM_8, soa_mdl_RIM_9)
+
+# Getting model formula
+soa_formula<-as.data.frame(as.character(sapply(soa_model_list,formula),col.names=c("model_formula")))
+soa_formula<-dplyr::rename(soa_formula,formula=names(soa_formula))
+
+# Getting model convergence
+soa_cnvrg<-c()
+for(i in c(1:length(soa_model_list))){
+  smry<-summary(soa_model_list[[i]])
+  soa_cnvrg[i] <- ifelse(is_empty(smry$optinfo$conv$lme4),1,0)
+}
+
+soa_cnvrg<-as.data.frame(soa_cnvrg)
+colnames(soa_cnvrg)<-c("model_convergence")
+
+# Binding the two
+soa_mdl_RIM_anova_clean<-bind_cols(soa_mdl_RIM_anova_clean,soa_formula,soa_cnvrg)
+
+kbl(arrange(soa_mdl_RIM_anova_clean, BIC), escape = F, digits = 2, align = 'l') %>% kable_styling(bootstrap_options = c("striped", "hover"), full_width = F, latex_options = "hold_position")
+```
+
+<font size="4">Winning model of RE intercept + alteration magnitude (centered)</font>   
+
+```{r display winning model, echo=FALSE}
+
+soa_mdl_RIM_6_table = tidy(soa_mdl_RIM_6)
+sig_rows_soa_rim = which(soa_mdl_RIM_6_table$p.value < 0.05)
+
+soa_mdl_RIM_6_table$CI.lower = soa_mdl_RIM_6_table$estimate - (1.96 * soa_mdl_RIM_6_table$std.error)
+soa_mdl_RIM_6_table$CI.higher = soa_mdl_RIM_6_table$estimate + (1.96 * soa_mdl_RIM_6_table$std.error)
+
+formula(soa_mdl_RIM_6)
+kbl(soa_mdl_RIM_6_table, escape = T, digits = 2, align = 'l') %>% kable_styling(bootstrap_options = c("striped", "hover"), full_width = F) %>% row_spec(sig_rows_soa_rim, background = "#CCFF99")
+
+```
+
+<font size="4">2) Random Effect = intercept Only</font>   
+
+```{r SoA models Random Intercept, echo=FALSE}
+### SoA models
+## Random Effect= intercept only
+
+# Models with ME only
+soa_mdl_RI_0 = glmer(response ~ domain + (1|ID), data=expMM, family = binomial)
+soa_mdl_RI_1 = glmer(response ~ mag_centered + (1|ID), data=expMM, family = binomial)
+soa_mdl_RI_2 = glmer(response ~ group + (1|ID), data=expMM, family = binomial)
+soa_mdl_RI_3 = glmer(response ~ mag_centered + domain + (1|ID), data=expMM, family = binomial)
+soa_mdl_RI_4 = glmer(response ~ mag_centered + domain + group +(1|ID), data=expMM, family = binomial)
+
+# Models with interactions
+soa_mdl_RI_5 = glmer(response ~ mag_centered*domain +(1|ID), data=expMM, family = binomial)
+soa_mdl_RI_6 = glmer(response ~ mag_centered*group + (1|ID), data=expMM, family = binomial)
+soa_mdl_RI_7 = glmer(response ~ mag_centered*group + domain + (1|ID), data=expMM, family = binomial)
+soa_mdl_RI_8 = glmer(response ~ mag_centered*domain +group+(1|ID), data=expMM, family = binomial)
+soa_mdl_RI_9 = glmer(response ~ mag_centered*domain*group+(1|ID), data=expMM, family = binomial)
+
+# Creating a table of model comparisons (soa_mdl_RI_anova)
+soa_mdl_RI_anova = anova(soa_mdl_RI_0, soa_mdl_RI_1, soa_mdl_RI_2, soa_mdl_RI_3, soa_mdl_RI_4, soa_mdl_RI_5, soa_mdl_RI_6, soa_mdl_RI_7, soa_mdl_RI_8, soa_mdl_RI_9)
+
+# Dropping all columns but model num, BIC, AIC
+soa_mdl_RI_anova_clean<-soa_mdl_RI_anova%>%
+  mutate(model_num=row.names(soa_mdl_RI_anova))%>% #getting model num from row name
+  dplyr::select(c("model_num","AIC","BIC"))
+
+# Reordering so that models are according to numeric order
+soa_mdl_RI_anova_clean$model_num<- factor(soa_mdl_RI_anova_clean$model_num,levels= str_sort(soa_mdl_RI_anova_clean$model_num, numeric = TRUE))
+soa_mdl_RI_anova_clean<-arrange(soa_mdl_RI_anova_clean,model_num)
+
+# Creating the list of models
+soa_model_list<-c(soa_mdl_RI_0, soa_mdl_RI_1, soa_mdl_RI_2, soa_mdl_RI_3, soa_mdl_RI_4, soa_mdl_RI_5, soa_mdl_RI_6, soa_mdl_RI_7, soa_mdl_RI_8, soa_mdl_RI_9)
+
+# Getting model formula
+soa_formula<-as.data.frame(as.character(sapply(soa_model_list,formula),col.names=c("model_formula")))
+soa_formula<-dplyr::rename(soa_formula,formula=names(soa_formula))
+
+# Getting model convergence
+soa_cnvrg<-c()
+for(i in c(1:length(soa_model_list))){
+smry<-summary(soa_model_list[[i]])
+  soa_cnvrg[i] <- ifelse(is_empty(smry$optinfo$conv$lme4),1,0)
+}
+
+soa_cnvrg<-as.data.frame(soa_cnvrg)
+colnames(soa_cnvrg)<-c("model_convergence")
+
+# Binding the two
+soa_mdl_RI_anova_clean<-bind_cols(soa_mdl_RI_anova_clean,soa_formula,soa_cnvrg)
+
+kbl(arrange(soa_mdl_RI_anova_clean, BIC), escape = T, digits = 2, align = 'l') %>% kable_styling(bootstrap_options = c("striped", "hover"), full_width = F)
+```
+
+
+<font size="4">Winning model of RE intercept</font>   
+
+```{r display winning model of RE Intercept,echo=FALSE}
+
+soa_mdl_RI_6_table = tidy(soa_mdl_RI_6)
+sig_rows_soa_ri = which(soa_mdl_RI_6_table$p.value < 0.05)
+
+soa_mdl_RI_6_table$CI.lower = soa_mdl_RI_6_table$estimate - (1.96 * soa_mdl_RI_6_table$std.error)
+soa_mdl_RI_6_table$CI.higher = soa_mdl_RI_6_table$estimate + (1.96 * soa_mdl_RI_6_table$std.error)
+
+formula(soa_mdl_RI_6)
+kbl(soa_mdl_RI_6_table, escape = T, digits = 2, align = 'l') %>% kable_styling(bootstrap_options = c("striped", "hover"), full_width = F) %>% row_spec(sig_rows_soa_ri, background = "#CCFF99")
+
+```
+
+<font size="4">3) Random Effect = intercept + domain</font>   
+
+```{r SoA models Random Intercept and Random Slope of Domain, echo=FALSE}
+### SoA models
+## Random Effect= intercept + Slope of Domain = RID
+
+# Models with ME only
+soa_mdl_RID_0 = glmer(response ~ domain + (1+domain|ID), data=expMM, family = binomial)
+soa_mdl_RID_1 = glmer(response ~ mag_centered + (1+domain|ID), data=expMM, family = binomial)
+soa_mdl_RID_2 = glmer(response ~ group + (1+domain|ID), data=expMM, family = binomial)
+soa_mdl_RID_3 = glmer(response ~ mag_centered + domain + (1+domain|ID), data=expMM, family = binomial)
+soa_mdl_RID_4 = glmer(response ~ mag_centered + domain + group +(1+domain|ID), data=expMM, family = binomial)
+
+# Models with interactions
+soa_mdl_RID_5 = glmer(response ~ mag_centered*domain +(1+domain|ID), data=expMM, family = binomial)
+soa_mdl_RID_6 = glmer(response ~ mag_centered*group + (1+domain|ID), data=expMM, family = binomial)
+soa_mdl_RID_7 = glmer(response ~ mag_centered*group + domain + (1+domain|ID), data=expMM, family = binomial)
+soa_mdl_RID_8 = glmer(response ~ mag_centered*domain +group+(1+domain|ID), data=expMM, family = binomial)
+soa_mdl_RID_9 = glmer(response ~ mag_centered*domain*group+(1+domain|ID), data=expMM, family = binomial)
+
+# Creating a table of model comparisons (soa_mdl_RID_anova)
+soa_mdl_RID_anova = anova(soa_mdl_RID_0, soa_mdl_RID_1, soa_mdl_RID_2, soa_mdl_RID_3, soa_mdl_RID_4, soa_mdl_RID_5, soa_mdl_RID_6, soa_mdl_RID_7, soa_mdl_RID_8, soa_mdl_RID_9)
+
+# Dropping all columns but model num, BIC, AIC
+soa_mdl_RID_anova_clean<-soa_mdl_RID_anova%>%
+  mutate(model_num=row.names(soa_mdl_RID_anova))%>% #getting model num from row name
+  dplyr::select(c("model_num","AIC","BIC"))
+
+# Reordering so that models are according to numeric order
+soa_mdl_RID_anova_clean$model_num<- factor(soa_mdl_RID_anova_clean$model_num,levels= str_sort(soa_mdl_RID_anova_clean$model_num, numeric = TRUE))
+soa_mdl_RID_anova_clean<-arrange(soa_mdl_RID_anova_clean,model_num)
+
+# Creating the list of models
+soa_model_list<-c(soa_mdl_RID_0, soa_mdl_RID_1, soa_mdl_RID_2, soa_mdl_RID_3, soa_mdl_RID_4, soa_mdl_RID_5, soa_mdl_RID_6, soa_mdl_RID_7, soa_mdl_RID_8, soa_mdl_RID_9)
+
+# Getting model formula
+soa_formula<-as.data.frame(as.character(sapply(soa_model_list,formula),col.names=c("model_formula")))
+soa_formula<-dplyr::rename(soa_formula,formula=names(soa_formula))
+
+# Getting model convergence
+soa_cnvrg<-c()
+for(i in c(1:length(soa_model_list))){
+smry<-summary(soa_model_list[[i]])
+  soa_cnvrg[i] <- ifelse(is_empty(smry$optinfo$conv$lme4),1,0)
+}
+
+soa_cnvrg<-as.data.frame(soa_cnvrg)
+colnames(soa_cnvrg)<-c("model_convergence")
+
+# Binding the two
+soa_mdl_RID_anova_clean<-bind_cols(soa_mdl_RID_anova_clean,soa_formula,soa_cnvrg)
+
+kbl(arrange(soa_mdl_RID_anova_clean, BIC), escape = F, digits = 2, align = 'l') %>% kable_styling(bootstrap_options = c("striped", "hover"), full_width = F)
+
+```
+
+<font size="4">Winning model of RE intercept + domain</font>   
+
+```{r display winning model of RE intercept + domain, echo=FALSE}
+
+soa_mdl_RID_6_table = tidy(soa_mdl_RID_6)
+sig_rows_soa_rid = which(soa_mdl_RID_6_table$p.value < 0.05)
+
+soa_mdl_RID_6_table$CI.lower = soa_mdl_RID_6_table$estimate - (1.96 * soa_mdl_RID_6_table$std.error)
+soa_mdl_RID_6_table$CI.higher = soa_mdl_RID_6_table$estimate + (1.96 * soa_mdl_RID_6_table$std.error)
+
+formula(soa_mdl_RID_6)
+kbl(soa_mdl_RID_6_table, escape = F, digits = 2, align = 'l') %>% kable_styling(bootstrap_options = c("striped", "hover"), full_width = F) %>% row_spec(sig_rows_soa_rid, background = "#CCFF99")
+```
+
+
+<font size="6"><u>Model comparison of Confidence (Table S4)</u></font>   
+<font size="4">1) Random Effect = intercept + Alteration Magnitude</font>  
+
+```{r Confidence Models RE Intercept + Mag, echo=FALSE, message=FALSE, warning=FALSE}
+### Confidence models
+## Random Effect= intercept + Slope of Mag = RIM
+
+# Models with ME only
+conf_mdl_RIM_0= lmer(conf ~ domain + (1+mag_centered|ID), data=expMM)
+conf_mdl_RIM_1= lmer(conf ~ mag_sqr + (1+mag_centered|ID), data=expMM)
+conf_mdl_RIM_2= lmer(conf ~ acc + (1+mag_centered|ID), data=expMM)
+conf_mdl_RIM_3= lmer(conf ~ group + (1+mag_centered|ID), data=expMM)
+conf_mdl_RIM_4= lmer(conf ~ acc + mag_sqr + (1 + mag_centered|ID), data=expMM)
+conf_mdl_RIM_5= lmer(conf ~ group + mag_sqr + (1 + mag_centered|ID), data=expMM)
+conf_mdl_RIM_6= lmer(conf ~ domain + mag_sqr + (1+mag_centered|ID), data=expMM)
+conf_mdl_RIM_7= lmer(conf ~ acc+group+ mag_sqr+(1+mag_centered|ID), data=expMM)
+
+# Models with interactions
+conf_mdl_RIM_8= lmer(conf ~ acc * mag_sqr + (1+mag_centered|ID), data=expMM)
+conf_mdl_RIM_9= lmer(conf ~ group * mag_sqr + (1+mag_centered|ID), data=expMM)
+conf_mdl_RIM_10= lmer(conf ~ acc * mag_sqr+group + (1+mag_centered|ID), data=expMM)
+conf_mdl_RIM_11= lmer(conf ~ acc * mag_sqr*group + (1+mag_centered|ID), data=expMM)
+
+
+conf_mdl_RIM_11_withPVal= lmerTest::lmer(conf ~ acc*mag_sqr*group +(1+mag_centered|ID), data=expMM, REML = FALSE)
+
+
+# Creating a table of model comparisons
+conf_mdl_RIM_anova = anova(conf_mdl_RIM_0, conf_mdl_RIM_1, conf_mdl_RIM_2, conf_mdl_RIM_3, conf_mdl_RIM_4, conf_mdl_RIM_5, conf_mdl_RIM_6, conf_mdl_RIM_7, conf_mdl_RIM_8, conf_mdl_RIM_9,conf_mdl_RIM_10,conf_mdl_RIM_11)
+
+# Dropping all columns but model num, BIC, AIC
+conf_mdl_RIM_anova_clean<-conf_mdl_RIM_anova%>%
+  mutate(model_num=row.names(conf_mdl_RIM_anova))%>% #getting model num from row name
+  dplyr::select(c("model_num","AIC","BIC"))
+
+# Reordering so that models are according to numeric order
+conf_mdl_RIM_anova_clean$model_num<- factor(conf_mdl_RIM_anova_clean$model_num,levels= str_sort(conf_mdl_RIM_anova_clean$model_num, numeric = TRUE))
+conf_mdl_RIM_anova_clean<-arrange(conf_mdl_RIM_anova_clean,model_num)
+
+# Creating the list of models
+conf_model_list<-c(conf_mdl_RIM_0, conf_mdl_RIM_1, conf_mdl_RIM_2, conf_mdl_RIM_3, conf_mdl_RIM_4, conf_mdl_RIM_5, conf_mdl_RIM_6, conf_mdl_RIM_7, conf_mdl_RIM_8, conf_mdl_RIM_9,conf_mdl_RIM_10,conf_mdl_RIM_11)
+
+# Getting model formula
+conf_formula<-as.data.frame(as.character(sapply(conf_model_list,formula),col.names=c("model_formula")))
+conf_formula<-dplyr::rename(conf_formula,formula=names(conf_formula))
+
+# Getting model convergence
+conf_cnvrg<-c()
+for(i in c(1:length(conf_model_list))){
+smry<-summary(conf_model_list[[i]])
+  conf_cnvrg[i] <- ifelse(is_empty(smry$optinfo$conv$lme4),1,0)
+}
+
+conf_cnvrg<-as.data.frame(conf_cnvrg)
+colnames(conf_cnvrg)<-c("model_convergence")
+
+# Binding the two
+conf_mdl_RIM_anova_clean<-bind_cols(conf_mdl_RIM_anova_clean,conf_formula,conf_cnvrg)
+
+kbl(arrange(conf_mdl_RIM_anova_clean, BIC), escape = F, digits = 2, align = 'l') %>% kable_styling(bootstrap_options = c("striped", "hover"), full_width = F)
+```
+
+<font size="4">Winning model of RE intercept + alteration magnitude (centered)</font>   
+
+```{r display winning model of RE Intercept mag, echo=FALSE, message = FALSE}
+
+conf_mdl_RIM_11_withPVal_table = tidy(conf_mdl_RIM_11_withPVal)
+drops <- c("group")
+conf_mdl_RIM_11_withPVal_table = conf_mdl_RIM_11_withPVal_table[ , !(names(conf_mdl_RIM_11_withPVal_table) %in% drops)]
+conf_mdl_RIM_11_withPVal_table_noInter = conf_mdl_RIM_11_withPVal_table[2:8,]
+
+conf_mdl_RIM_11_withPVal_confint = confint(conf_mdl_RIM_11_withPVal)
+conf_mdl_RIM_11_withPVal_confint = rownames_to_column(as.data.frame(conf_mdl_RIM_11_withPVal_confint))
+colnames(conf_mdl_RIM_11_withPVal_confint) <- c("term", "CI.lower", "CI.upper")
+conf_mdl_RIM_11_withPVal_table_noInter = merge(conf_mdl_RIM_11_withPVal_table_noInter, conf_mdl_RIM_11_withPVal_confint[6:12,], by = "term")
+conf_mdl_RIM_11_withPVal_table_noInter$'95% CI' = ""
+
+formula(conf_mdl_RIM_11_withPVal)
+kbl(conf_mdl_RIM_11_withPVal_table_noInter, escape = F, digits = 2, align = 'l') %>% kable_styling(bootstrap_options = c("striped", "hover"), full_width = F) %>% column_spec(ncol(conf_mdl_RIM_11_withPVal_table_noInter), image = spec_pointrange(x = conf_mdl_RIM_11_withPVal_table_noInter$estimate, xmin = conf_mdl_RIM_11_withPVal_table_noInter$CI.lower, xmax = conf_mdl_RIM_11_withPVal_table_noInter$CI.upper, vline = 0))
+```
+
+<font size="4">2) Random Effect = intercept + accuracy</font>  
+
+```{r Confidence Models RE Intercept + ACC, echo=FALSE, message=FALSE, warning=FALSE}
+### Confidence models
+## Random Effect= intercept + Slope of Accuracy = RIA
+
+# Models with ME only
+conf_mdl_RIA_0= lmer(conf ~ domain+ (1+acc|ID), data=expMM)
+conf_mdl_RIA_1= lmer(conf ~ mag_sqr+ (1+acc|ID), data=expMM)
+conf_mdl_RIA_2= lmer(conf ~ acc+ (1+acc|ID), data=expMM)
+conf_mdl_RIA_3= lmer(conf ~ group+ (1+acc|ID), data=expMM)
+conf_mdl_RIA_4= lmer(conf ~ acc+ mag_sqr+(1+acc|ID), data=expMM)
+conf_mdl_RIA_5= lmer(conf ~ group+ mag_sqr+(1+acc|ID), data=expMM)
+conf_mdl_RIA_6= lmer(conf ~ domain+ mag_sqr+(1+acc|ID), data=expMM)
+conf_mdl_RIA_7= lmer(conf ~ acc+group+ mag_sqr+(1+acc|ID), data=expMM)
+
+# Models with interactions
+conf_mdl_RIA_8= lmer(conf ~ acc*mag_sqr+ (1+acc|ID), data=expMM)
+conf_mdl_RIA_9= lmer(conf ~ group*mag_sqr+ (1+acc|ID), data=expMM)
+conf_mdl_RIA_10= lmer(conf ~ acc*mag_sqr+group +(1+acc|ID), data=expMM)
+conf_mdl_RIA_11= lmer(conf ~ acc*mag_sqr*group +(1+acc|ID), data=expMM)
+
+
+conf_mdl_RIA_11_withPVal= lmerTest::lmer(conf ~ acc*mag_sqr*group +(1+acc|ID), data=expMM)
+
+
+# Creating a table of model comparisons
+conf_mdl_RIA_anova = anova(conf_mdl_RIA_0, conf_mdl_RIA_1, conf_mdl_RIA_2, conf_mdl_RIA_3, conf_mdl_RIA_4, conf_mdl_RIA_5, conf_mdl_RIA_6, conf_mdl_RIA_7, conf_mdl_RIA_8, conf_mdl_RIA_9,conf_mdl_RIA_10,conf_mdl_RIA_11)
+
+# Dropping all columns but model num, BIC, AIC
+conf_mdl_RIA_anova_clean<-conf_mdl_RIA_anova%>%
+  mutate(model_num=row.names(conf_mdl_RIA_anova))%>% #getting model num from row name
+  dplyr::select(c("model_num","AIC","BIC"))
+
+# Reordering so that models are according to numeric order
+conf_mdl_RIA_anova_clean$model_num<- factor(conf_mdl_RIA_anova_clean$model_num,levels= str_sort(conf_mdl_RIA_anova_clean$model_num, numeric = TRUE))
+conf_mdl_RIA_anova_clean<-arrange(conf_mdl_RIA_anova_clean,model_num)
+
+# Creating the list of models
+conf_model_list<-c(conf_mdl_RIA_0, conf_mdl_RIA_1, conf_mdl_RIA_2, conf_mdl_RIA_3, conf_mdl_RIA_4, conf_mdl_RIA_5, conf_mdl_RIA_6, conf_mdl_RIA_7, conf_mdl_RIA_8, conf_mdl_RIA_9,conf_mdl_RIA_10,conf_mdl_RIA_11)
+
+# Getting model formula
+conf_formula<-as.data.frame(as.character(sapply(conf_model_list,formula),col.names=c("model_formula")))
+conf_formula<-dplyr::rename(conf_formula,formula=names(conf_formula))
+
+# Getting model convergence
+conf_cnvrg<-c()
+for(i in c(1:length(conf_model_list))){
+smry<-summary(conf_model_list[[i]])
+  conf_cnvrg[i] <- ifelse(is_empty(smry$optinfo$conv$lme4),1,0)
+}
+
+conf_cnvrg<-as.data.frame(conf_cnvrg)
+colnames(conf_cnvrg)<-c("model_convergence")
+
+
+# Binding the two
+conf_mdl_RIA_anova_clean<-bind_cols(conf_mdl_RIA_anova_clean,conf_formula,conf_cnvrg)
+
+kbl(arrange(conf_mdl_RIA_anova_clean, BIC), escape = F, digits = 2, align = 'l') %>% kable_styling(bootstrap_options = c("striped", "hover"), full_width = F)
+
+```
+
+<font size="4">Winning model of RE intercept + accuracy</font>   
+
+```{r display winning model of RE Intercept accuracy, echo=FALSE, message = FALSE}
+
+conf_mdl_RIA_11_withPVal_table = tidy(conf_mdl_RIA_11_withPVal)
+drops <- c("group")
+conf_mdl_RIA_11_withPVal_table = conf_mdl_RIA_11_withPVal_table[ , !(names(conf_mdl_RIA_11_withPVal_table) %in% drops)]
+conf_mdl_RIA_11_withPVal_table_noInter = conf_mdl_RIA_11_withPVal_table[2:8,]
+
+conf_mdl_RIA_11_withPVal_confint = confint(conf_mdl_RIA_11_withPVal)
+conf_mdl_RIA_11_withPVal_confint = rownames_to_column(as.data.frame(conf_mdl_RIA_11_withPVal_confint))
+colnames(conf_mdl_RIA_11_withPVal_confint) <- c("term", "CI.lower", "CI.upper")
+conf_mdl_RIA_11_withPVal_table_noInter = merge(conf_mdl_RIA_11_withPVal_table_noInter, conf_mdl_RIA_11_withPVal_confint[6:12,], by = "term")
+conf_mdl_RIA_11_withPVal_table_noInter$'95% CI' = ""
+
+formula(conf_mdl_RIA_11_withPVal)
+kbl(conf_mdl_RIA_11_withPVal_table_noInter, escape = F, digits = 2, align = 'l') %>% kable_styling(bootstrap_options = c("striped", "hover"), full_width = F) %>% column_spec(ncol(conf_mdl_RIA_11_withPVal_table_noInter), image = spec_pointrange(x = conf_mdl_RIA_11_withPVal_table_noInter$estimate, xmin = conf_mdl_RIA_11_withPVal_table_noInter$CI.lower, xmax = conf_mdl_RIA_11_withPVal_table_noInter$CI.upper, vline = 0))
+```
+
+
+<font size="4">3) Random Effect = intercept</font>  
+```{r Confidence Models RE Intercept Only, echo=FALSE, message=FALSE, warning=FALSE}   
+### Confidence models
+## Random Effect = intercept only = RI
+
+# Models with ME only
+conf_mdl_RI_0= lmer(conf ~ domain+ (1|ID), data=expMM)
+conf_mdl_RI_1= lmer(conf ~ mag_sqr+ (1|ID), data=expMM)
+conf_mdl_RI_2= lmer(conf ~ acc+ (1|ID), data=expMM)
+conf_mdl_RI_3= lmer(conf ~ group+ (1|ID), data=expMM)
+conf_mdl_RI_4= lmer(conf ~ acc+ mag_sqr+(1|ID), data=expMM)
+conf_mdl_RI_5= lmer(conf ~ group+ mag_sqr+(1|ID), data=expMM)
+conf_mdl_RI_6= lmer(conf ~ domain+ mag_sqr+(1|ID), data=expMM)
+conf_mdl_RI_7= lmer(conf ~ acc+group+ mag_sqr+(1|ID), data=expMM)
+
+# Models with interactions
+conf_mdl_RI_8= lmer(conf ~ acc*mag_sqr+ (1|ID), data=expMM)
+conf_mdl_RI_9= lmer(conf ~ group*mag_sqr+ (1|ID), data=expMM)
+conf_mdl_RI_10= lmer(conf ~ acc*mag_sqr+group +(1|ID), data=expMM)
+conf_mdl_RI_11= lmer(conf ~ acc*mag_sqr*group +(1|ID), data=expMM)
+
+conf_mdl_RI_11_withPVal= lmerTest::lmer(conf ~ acc*mag_sqr*group +(1|ID), data=expMM)
+
+
+# Creating a table of model comparisons
+conf_mdl_RI_anova = anova(conf_mdl_RI_0, conf_mdl_RI_1, conf_mdl_RI_2, conf_mdl_RI_3, conf_mdl_RI_4, conf_mdl_RI_5, conf_mdl_RI_6, conf_mdl_RI_7, conf_mdl_RI_8, conf_mdl_RI_9,conf_mdl_RI_10,conf_mdl_RI_11)
+
+# Dropping all columns but model num, BIC, AIC
+conf_mdl_RI_anova_clean<-conf_mdl_RI_anova%>%
+  mutate(model_num=row.names(conf_mdl_RI_anova))%>% #getting model num from row name
+  dplyr::select(c("model_num","AIC","BIC"))
+
+# Reordering so that models are according to numeric order
+conf_mdl_RI_anova_clean$model_num<- factor(conf_mdl_RI_anova_clean$model_num,levels= str_sort(conf_mdl_RI_anova_clean$model_num, numeric = TRUE))
+conf_mdl_RI_anova_clean<-arrange(conf_mdl_RI_anova_clean,model_num)
+
+# Creating the list of models
+conf_model_list<-c(conf_mdl_RI_0, conf_mdl_RI_1, conf_mdl_RI_2, conf_mdl_RI_3, conf_mdl_RI_4, conf_mdl_RI_5, conf_mdl_RI_6, conf_mdl_RI_7, conf_mdl_RI_8, conf_mdl_RI_9,conf_mdl_RI_10,conf_mdl_RI_11)
+
+# Getting model formula
+conf_formula<-as.data.frame(as.character(sapply(conf_model_list,formula),col.names=c("model_formula")))
+conf_formula<-dplyr::rename(conf_formula,formula=names(conf_formula))
+
+# Getting model convergence
+conf_cnvrg<-c()
+for(i in c(1:length(conf_model_list))){
+smry<-summary(conf_model_list[[i]])
+  conf_cnvrg[i] <- ifelse(is_empty(smry$optinfo$conv$lme4),1,0)
+}
+
+conf_cnvrg<-as.data.frame(conf_cnvrg)
+colnames(conf_cnvrg)<-c("model_convergence")
+
+# Binding the two
+conf_mdl_RI_anova_clean<-bind_cols(conf_mdl_RI_anova_clean,conf_formula,conf_cnvrg)
+
+kbl(arrange(conf_mdl_RI_anova_clean, BIC), escape = F, digits = 4, align = 'l') %>% kable_styling(bootstrap_options = c("striped", "hover"), full_width = F)
+
+```
+
+<font size="4">Winning model of RE intercept</font>   
+
+```{r display winning model of RE intercept, echo=FALSE, message = FALSE}
+
+conf_mdl_RI_11_withPVal_table = tidy(conf_mdl_RI_11_withPVal)
+drops <- c("group")
+conf_mdl_RI_11_withPVal_table = conf_mdl_RI_11_withPVal_table[ , !(names(conf_mdl_RI_11_withPVal_table) %in% drops)]
+conf_mdl_RI_11_withPVal_table_noInter = conf_mdl_RI_11_withPVal_table[2:8,]
+
+conf_mdl_RI_11_withPVal_confint = confint(conf_mdl_RI_11_withPVal)
+conf_mdl_RI_11_withPVal_confint = rownames_to_column(as.data.frame(conf_mdl_RI_11_withPVal_confint))
+colnames(conf_mdl_RI_11_withPVal_confint) <- c("term", "CI.lower", "CI.upper")
+conf_mdl_RI_11_withPVal_table_noInter = merge(conf_mdl_RI_11_withPVal_table_noInter, conf_mdl_RI_11_withPVal_confint[4:10,], by = "term")
+conf_mdl_RI_11_withPVal_table_noInter$'95% CI' = ""
+
+formula(conf_mdl_RI_11_withPVal)
+kbl(conf_mdl_RI_11_withPVal_table_noInter, escape = F, digits = 2, align = 'l') %>% kable_styling(bootstrap_options = c("striped", "hover"), full_width = F) %>% column_spec(ncol(conf_mdl_RI_11_withPVal_table_noInter), image = spec_pointrange(x = conf_mdl_RI_11_withPVal_table_noInter$estimate, xmin = conf_mdl_RI_11_withPVal_table_noInter$CI.lower, xmax = conf_mdl_RI_11_withPVal_table_noInter$CI.upper, vline = 0))
+```
+
+
+<font size="6"><u>Sensitivity and bias differences between groups</u></font>  
+
+```{r Printing the comparision table of sensitivity and bias between groups}
+kbl(grp_cmpr_SDT, escape = F, digits = 4, align = 'l') %>% kable_styling(bootstrap_options = c("striped", "hover"), full_width = F)
+```
